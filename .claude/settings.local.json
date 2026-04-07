@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(curl -s http://localhost:8000/api/v2/collections)",
+      "Bash(curl -s -X POST http://localhost:8000/api/v2/collections -H \"Content-Type: application/json\" -d '{\"name\":\"vault\",\"get_or_create\":true}')",
+      "Bash(curl -sv http://localhost:8000/api/v2/collections)",
+      "Bash(chroma --version)",
+      "Bash(pip show:*)",
+      "Bash(pip3 show:*)",
+      "Bash(python3 -c \"import chromadb; print\\(chromadb.__version__\\)\")",
+      "Bash(curl -s http://localhost:8000/api/v1/version)",
+      "Bash(curl -s http://localhost:8000/)",
+      "Bash(curl -s http://localhost:8000/api/v2/heartbeat)",
+      "Bash(curl -s http://localhost:8000/api/v2/version)",
+      "Bash(curl -s http://localhost:8000/api/v2/tenants/default_tenant)",
+      "Bash(curl -s \"http://localhost:8000/api/v2/tenants/default_tenant/databases/default_database/collections\")",
+      "Bash(mkdir -p '/Users/alexandersong/Documents/AI Playground Obby/Playground/sessions/work' '/Users/alexandersong/Documents/AI Playground Obby/Playground/sessions/personal-projects' '/Users/alexandersong/Documents/AI Playground Obby/Playground/sessions/learning' '/Users/alexandersong/Documents/AI Playground Obby/Playground/sessions/health' '/Users/alexandersong/Documents/AI Playground Obby/Playground/sessions/hobbies')",
+      "Bash(mkdir -p '/Users/alexandersong/Documents/AI Playground Obby/Playground/solutions/work' '/Users/alexandersong/Documents/AI Playground Obby/Playground/solutions/personal-projects' '/Users/alexandersong/Documents/AI Playground Obby/Playground/solutions/learning' '/Users/alexandersong/Documents/AI Playground Obby/Playground/solutions/health' '/Users/alexandersong/Documents/AI Playground Obby/Playground/solutions/hobbies')",
+      "Bash(mkdir -p '/Users/alexandersong/Documents/AI Playground Obby/Playground/contexts/technical' '/Users/alexandersong/Documents/AI Playground Obby/Playground/contexts/topics')",
+      "Bash(mkdir -p '/Users/alexandersong/Documents/AI Playground Obby/Playground/patterns/weekly-reviews')",
+      "Bash(mkdir -p '/Users/alexandersong/Documents/AI Playground Obby/Playground/templates')",
+      "Bash(claude mcp:*)",
+      "Bash(python3 -c ':*)",
+      "mcp__obsidian-tracker__list_contexts",
+      "mcp__obsidian-tracker__load_context",
+      "Bash(node --test test/calc.test.js)",
+      "Bash(python3:*)",
+      "mcp__obsidian-tracker__search_vault",
+      "mcp__obsidian-tracker__log_session",
+      "mcp__obsidian-tracker__create_context"
+    ]
+  }
+}
