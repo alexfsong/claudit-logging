@@ -1,252 +1,237 @@
 #!/usr/bin/env node
+/**
+ * claudit — Local optimization suite for Claude Code.
+ * MCP server that gives Claude access to a persistent, project-aware knowledge base.
+ *
+ * Tools:
+ *   search_knowledge  — FTS5 + semantic search over solutions, patterns, gotchas
+ *   add_knowledge     — store a solution, pattern, gotcha, decision, or reference
+ *   get_project_map   — annotated file tree (replaces manual file exploration)
+ *   annotate_file     — set a one-line role description for a file
+ *   get_context       — recent sessions + top knowledge for current project
+ *   log_session       — record session outcome + links to knowledge created
+ */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
+import { searchKnowledge } from "./tools/searchKnowledge.js";
+import { addKnowledge } from "./tools/addKnowledge.js";
+import { getProjectMap } from "./tools/getProjectMap.js";
+import { annotateFile } from "./tools/annotateFile.js";
+import { getContext } from "./tools/getContext.js";
 import { logSession } from "./tools/logSession.js";
-import { updateSession } from "./tools/updateSession.js";
-import { extractSolution } from "./tools/extractSolution.js";
-import { searchVault } from "./tools/searchVault.js";
-import { loadContext } from "./tools/loadContext.js";
-import { listContexts } from "./tools/listContexts.js";
-import { updateContext } from "./tools/updateContext.js";
-import { createContext } from "./tools/createContext.js";
-import { extractContextFromSession } from "./tools/extractContextFromSession.js";
-import { generateWeeklyReview } from "./tools/generateWeeklyReview.js";
-import { reindexVault } from "./tools/reindexVault.js";
-const VAULT_PATH = process.env.VAULT_PATH;
-if (!VAULT_PATH) {
-    console.error("VAULT_PATH environment variable is required");
-    process.exit(1);
-}
-const server = new Server({ name: "obsidian-tracker", version: "1.0.0" }, { capabilities: { tools: {} } });
+const server = new Server({ name: "claudit", version: "2.0.0" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
         {
-            name: "log_session",
-            description: "Log a Claude session to the Obsidian vault. Call this at the end of a session to record what was discussed, the output type, and key results.",
+            name: "search_knowledge",
+            description: "Search the persistent knowledge base for solutions, patterns, gotchas, decisions, " +
+                "and references relevant to what you're about to work on. Call this BEFORE exploring " +
+                "files or attempting to solve a problem — prior solutions may already exist. " +
+                "Uses full-text search (always) + semantic re-ranking (when Ollama is available).",
             inputSchema: {
                 type: "object",
                 properties: {
-                    area: {
+                    query: {
                         type: "string",
-                        enum: ["work", "personal-projects", "learning", "health", "hobbies"],
-                        description: "Life area this session belongs to",
+                        description: "Natural language description of what you need",
                     },
-                    session_type: {
+                    type: {
                         type: "string",
-                        enum: ["planning", "brainstorming", "code", "research", "writing", "misc"],
+                        enum: ["solution", "pattern", "gotcha", "decision", "reference"],
+                        description: "Filter by knowledge type (optional)",
                     },
-                    output_type: {
-                        type: "string",
-                        enum: ["code", "brainstorm", "plan", "summary", "draft", "other"],
-                    },
-                    prompt_intent: {
-                        type: "string",
-                        description: "What the user was trying to accomplish",
-                    },
-                    key_output: {
-                        type: "string",
-                        description: "One-line summary of what Claude produced",
-                    },
-                    notable_output: {
-                        type: "string",
-                        description: "The key output content or a description of it",
-                    },
-                    duration_mins: { type: "number" },
                     project: {
                         type: "string",
-                        description: "Project or context name if applicable",
+                        description: "Project identifier override (auto-detected from git remote by default)",
                     },
-                    context_id: {
-                        type: "string",
-                        description: "ID of the context profile loaded for this session",
-                    },
-                    gaps_noticed: {
-                        type: "string",
-                        description: "Anything Claude had to ask for or assumed incorrectly",
-                    },
-                    context_provided: {
-                        type: "object",
-                        properties: {
-                            background: { type: "boolean" },
-                            examples: { type: "boolean" },
-                            constraints: { type: "boolean" },
-                            prior_output: { type: "boolean" },
-                        },
-                    },
-                    tags: {
-                        type: "array",
-                        items: { type: "string" },
-                    },
-                },
-                required: ["area", "session_type", "output_type", "prompt_intent", "key_output"],
-            },
-        },
-        {
-            name: "update_session",
-            description: "Update an existing session note — add rating, notes, or follow-up links after you've used the output.",
-            inputSchema: {
-                type: "object",
-                properties: {
-                    session_path: { type: "string", description: "Relative path to session note from vault root" },
-                    rating: { type: "number", minimum: 1, maximum: 5 },
-                    what_worked: { type: "string" },
-                    what_didnt: { type: "string" },
-                    follow_up: { type: "string" },
-                    gaps_noticed: { type: "string" },
-                },
-                required: ["session_path"],
-            },
-        },
-        {
-            name: "extract_solution",
-            description: "Extract a reusable solution from a session into a standalone searchable note.",
-            inputSchema: {
-                type: "object",
-                properties: {
-                    source_session: { type: "string", description: "Relative path to source session note" },
-                    problem: { type: "string", description: "One sentence: what was being solved" },
-                    solution: { type: "string", description: "One sentence: what resolved it" },
-                    solution_detail: { type: "string", description: "Full solution with code/artifacts if any" },
-                    confidence: { type: "string", enum: ["high", "medium", "low"] },
-                    caveats: { type: "string" },
-                    area: { type: "string", enum: ["work", "personal-projects", "learning", "health", "hobbies"] },
-                },
-                required: ["source_session", "problem", "solution", "area"],
-            },
-        },
-        {
-            name: "search_vault",
-            description: "Semantic search across all vault content — sessions, solutions, and context profiles. Returns the most relevant prior work for a given query.",
-            inputSchema: {
-                type: "object",
-                properties: {
-                    query: { type: "string", description: "Natural language search query" },
-                    k: { type: "number", description: "Number of results to return (default: 5)", default: 5 },
-                    filter_area: {
-                        type: "string",
-                        enum: ["work", "personal-projects", "learning", "health", "hobbies"],
-                        description: "Optional: restrict search to a specific life area",
-                    },
-                    filter_type: {
-                        type: "string",
-                        enum: ["session", "solution", "context"],
-                        description: "Optional: restrict to a specific note type",
+                    limit: {
+                        type: "number",
+                        description: "Max results to return (default: 8, max: 20)",
                     },
                 },
                 required: ["query"],
             },
         },
         {
-            name: "load_context",
-            description: "Load a context profile for a topic or project, combined with the most relevant prior sessions and solutions. Use at session start.",
+            name: "add_knowledge",
+            description: "Store a piece of knowledge for future sessions. Use this whenever you solve a " +
+                "non-trivial problem, discover a project-specific pattern, hit an unexpected gotcha, " +
+                "or make an architectural decision. Good knowledge entries save tokens in future sessions.",
             inputSchema: {
                 type: "object",
                 properties: {
-                    context_id: { type: "string", description: "Context ID from list_contexts" },
-                },
-                required: ["context_id"],
-            },
-        },
-        {
-            name: "list_contexts",
-            description: "List all active context profiles for the picker menu. Returns contexts sorted by recency.",
-            inputSchema: { type: "object", properties: {} },
-        },
-        {
-            name: "create_context",
-            description: "Create a new context profile for a topic or technical project.",
-            inputSchema: {
-                type: "object",
-                properties: {
-                    title: { type: "string" },
-                    type: { type: "string", enum: ["topic", "technical-project"] },
-                    area: { type: "string", enum: ["work", "personal-projects", "learning", "health", "hobbies"] },
-                    initial_interests: { type: "string" },
-                    initial_questions: { type: "string" },
-                    loader_instructions: { type: "string", description: "How Claude should use this context" },
-                },
-                required: ["title", "type", "area"],
-            },
-        },
-        {
-            name: "update_context",
-            description: "Update a specific section of a context profile.",
-            inputSchema: {
-                type: "object",
-                properties: {
-                    context_id: { type: "string" },
-                    field: {
+                    type: {
                         type: "string",
-                        enum: ["interests", "questions", "curator_notes", "loader_instructions"],
+                        enum: ["solution", "pattern", "gotcha", "decision", "reference"],
+                        description: "solution=how to solve a specific problem | " +
+                            "pattern=reusable code convention | " +
+                            "gotcha=trap or edge case | " +
+                            "decision=architectural choice + rationale | " +
+                            "reference=external doc or API note",
                     },
-                    content: { type: "string" },
-                    mode: {
+                    title: {
                         type: "string",
-                        enum: ["replace", "append"],
-                        default: "append",
+                        description: "Short, searchable title (e.g. 'How to run migrations in test env')",
+                    },
+                    content: {
+                        type: "string",
+                        description: "Full explanation — include enough detail to act on without re-reading the source",
+                    },
+                    code: {
+                        type: "string",
+                        description: "Code snippet illustrating the solution or pattern (optional)",
+                    },
+                    file_paths: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Relevant file paths (relative to project root)",
+                    },
+                    tags: {
+                        type: "array",
+                        items: { type: "string" },
+                        description: "Searchable tags",
+                    },
+                    project: {
+                        type: "string",
+                        description: "Project identifier (auto-detected by default). Leave empty for global knowledge.",
                     },
                 },
-                required: ["context_id", "field", "content"],
+                required: ["type", "title", "content"],
             },
         },
         {
-            name: "extract_context_from_session",
-            description: "Run Ollama over a session note to extract interests and questions, then merge into the linked context profile.",
+            name: "get_project_map",
+            description: "Get an annotated file tree of the project. Annotations show each file's role " +
+                "in one line, so you can understand project structure without reading files. " +
+                "Much more token-efficient than exploring with ls/find.",
             inputSchema: {
                 type: "object",
                 properties: {
-                    session_path: { type: "string" },
-                    context_id: { type: "string" },
-                },
-                required: ["session_path", "context_id"],
-            },
-        },
-        {
-            name: "generate_weekly_review",
-            description: "Generate a weekly review note by aggregating sessions and running Ollama analysis.",
-            inputSchema: {
-                type: "object",
-                properties: {
-                    week_offset: {
+                    dir: {
+                        type: "string",
+                        description: "Directory to map (default: git root of current directory)",
+                    },
+                    max_depth: {
                         type: "number",
-                        description: "0 = current week, 1 = last week (default: 0)",
-                        default: 0,
+                        description: "Max directory depth (default: 4)",
                     },
                 },
+                required: [],
             },
         },
         {
-            name: "reindex_vault",
-            description: "Rebuild the ChromaDB vector index from scratch. Run if search results seem stale or after bulk vault changes.",
-            inputSchema: { type: "object", properties: {} },
+            name: "annotate_file",
+            description: "Attach a one-line role description to a file. These annotations appear in " +
+                "get_project_map output and help future sessions understand the codebase without " +
+                "reading each file. Call after reading or creating a significant file.",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    path: {
+                        type: "string",
+                        description: "File path (absolute or relative to cwd)",
+                    },
+                    role: {
+                        type: "string",
+                        description: "One-line description of what the file does and exports. " +
+                            "E.g. 'JWT middleware, exports requireAuth and requireAdmin decorators'",
+                    },
+                    project: {
+                        type: "string",
+                        description: "Project identifier (auto-detected by default)",
+                    },
+                },
+                required: ["path", "role"],
+            },
+        },
+        {
+            name: "get_context",
+            description: "Load accumulated context for the current project: recent session history and " +
+                "top knowledge items. Call at the start of a session to orient yourself without " +
+                "spending tokens on file exploration.",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    project: {
+                        type: "string",
+                        description: "Project identifier (auto-detected by default)",
+                    },
+                    session_limit: {
+                        type: "number",
+                        description: "Number of recent sessions to show (default: 5)",
+                    },
+                    knowledge_limit: {
+                        type: "number",
+                        description: "Number of knowledge items to show (default: 10)",
+                    },
+                },
+                required: [],
+            },
+        },
+        {
+            name: "log_session",
+            description: "Record what happened in this session. Call before ending a session. " +
+                "Captures task, outcome, and links to any knowledge items you created (by id). " +
+                "This builds the session history shown by get_context in future sessions.",
+            inputSchema: {
+                type: "object",
+                properties: {
+                    summary: {
+                        type: "string",
+                        description: "2-3 sentence description of what was accomplished",
+                    },
+                    task: {
+                        type: "string",
+                        description: "One-line description of what the user asked for",
+                    },
+                    outcome: {
+                        type: "string",
+                        enum: ["solved", "partial", "blocked", "exploratory"],
+                    },
+                    knowledge_ids: {
+                        type: "array",
+                        items: { type: "number" },
+                        description: "IDs of knowledge items created or updated this session",
+                    },
+                    project: {
+                        type: "string",
+                        description: "Project identifier (auto-detected by default)",
+                    },
+                },
+                required: ["summary"],
+            },
         },
     ],
 }));
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    const a = (args ?? {});
     try {
         switch (name) {
-            case "log_session": return await logSession(VAULT_PATH, args);
-            case "update_session": return await updateSession(VAULT_PATH, args);
-            case "extract_solution": return await extractSolution(VAULT_PATH, args);
-            case "search_vault": return await searchVault(VAULT_PATH, args);
-            case "load_context": return await loadContext(VAULT_PATH, args);
-            case "list_contexts": return await listContexts(VAULT_PATH);
-            case "create_context": return await createContext(VAULT_PATH, args);
-            case "update_context": return await updateContext(VAULT_PATH, args);
-            case "extract_context_from_session":
-                return await extractContextFromSession(VAULT_PATH, args);
-            case "generate_weekly_review":
-                return await generateWeeklyReview(VAULT_PATH, args);
-            case "reindex_vault": return await reindexVault(VAULT_PATH);
+            case "search_knowledge":
+                return await searchKnowledge(a);
+            case "add_knowledge":
+                return await addKnowledge(a);
+            case "get_project_map":
+                return getProjectMap(a);
+            case "annotate_file":
+                return annotateFile(a);
+            case "get_context":
+                return getContext(a);
+            case "log_session":
+                return logSession(a);
             default:
-                return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
+                return {
+                    content: [{ type: "text", text: `Unknown tool: ${name}` }],
+                    isError: true,
+                };
         }
     }
     catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
         return {
-            content: [{ type: "text", text: `Error in ${name}: ${err.message}` }],
+            content: [{ type: "text", text: `Error in ${name}: ${msg}` }],
             isError: true,
         };
     }
@@ -254,6 +239,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("Claude Obsidian MCP server running");
+    console.error(`claudit MCP server running — DB: ${(await import("./db.js")).getDbPath()}`);
 }
 main().catch(console.error);
