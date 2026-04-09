@@ -28,7 +28,7 @@ export function detectProject(cwd: string = process.cwd()): string {
   } catch {
     // not a git repo or no remote
   }
-  return basename(cwd);
+  return cwd;
 }
 
 /**

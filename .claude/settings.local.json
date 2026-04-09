@@ -28,7 +28,28 @@
       "Bash(python3:*)",
       "mcp__obsidian-tracker__search_vault",
       "mcp__obsidian-tracker__log_session",
-      "mcp__obsidian-tracker__create_context"
+      "mcp__obsidian-tracker__create_context",
+      "Bash(git rm:*)",
+      "mcp__claudit__log_session",
+      "Bash(claude hooks:*)",
+      "Bash(node dist/cli.js info)",
+      "Bash(node dist/cli.js profile current)",
+      "Bash(node dist/cli.js profile show)",
+      "Bash(node dist/cli.js profile drift \"design and ship pure-CLI architecture for claudit\")",
+      "Bash(node dist/cli.js recall --limit 3)",
+      "Bash(node dist/cli.js add solution --title \"test entry\" --content \"test content\" --tags test,smoke)",
+      "Bash(node dist/cli.js list --type solution)",
+      "Bash(node dist/cli.js search \"test entry\" --json)",
+      "Bash(node dist/cli.js delete 1)",
+      "Bash(npm link:*)",
+      "Bash(claudit info:*)",
+      "Bash(npm prune:*)",
+      "Read(//Users/alexandersong/.claude/**)",
+      "Read(//Users/alexandersong/.claude/skills/**)",
+      "Bash(rm -f ~/.claude/session-context-prompted-*)",
+      "Bash(claudit --help)",
+      "Bash(claudit profile:*)",
+      "Bash(claudit run:*)"
     ]
   }
 }

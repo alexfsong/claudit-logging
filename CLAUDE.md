@@ -1,98 +1,155 @@
 # claudit — Local Optimization Suite for Claude Code
 
-MCP server that gives Claude Code a persistent, project-aware knowledge base.
-Maximizes token efficiency by replacing file exploration with accumulated knowledge.
+A pure CLI tool that gives Claude Code (or any other tool that can run shell
+commands) a persistent, project-aware knowledge base. Maximizes token efficiency
+by replacing file exploration with accumulated knowledge.
+
+**No MCP server.** No daemon. One binary, one SQLite file. Claude calls `claudit`
+via its Bash tool exactly the way you would in your terminal.
 
 ## Architecture
 
 ```
 src/
-├── index.ts          # MCP server entry, 6 tool registrations
-├── db.ts             # SQLite + FTS5 schema (knowledge, sessions, file_roles)
-├── embed.ts          # Ollama embeddings — optional, graceful fallback to FTS5
-├── project.ts        # Git-based project detection, file tree builder
-├── types.ts          # MCP SDK type re-export
-├── cli.ts            # claudit CLI (search, list, delete, sessions, map, info)
-└── tools/
-    ├── searchKnowledge.ts   # FTS5 + cosine re-rank when Ollama available
-    ├── addKnowledge.ts      # Insert with async embedding
-    ├── getProjectMap.ts     # Annotated file tree
-    ├── annotateFile.ts      # Upsert file_roles
-    ├── getContext.ts        # Recent sessions + top knowledge
-    └── logSession.ts        # Record session outcome
+├── cli.ts              # argv dispatcher — thin, calls into commands/
+├── db.ts               # SQLite + FTS5 schema (knowledge, sessions, file_roles, contexts)
+├── embed.ts            # Ollama embeddings — optional, graceful fallback to FTS5
+├── project.ts          # Git-based project detection, file tree builder
+├── activeContext.ts    # Active profile state file (~/.local/share/claudit/active-context.json)
+└── commands/
+    ├── types.ts        # CommandResult { text, json }
+    ├── add.ts          # claudit add <type> ...
+    ├── search.ts       # claudit search "<query>"
+    ├── list.ts         # claudit list
+    ├── delete.ts       # claudit delete <id>
+    ├── annotate.ts     # claudit annotate <path> "<role>"
+    ├── log.ts          # claudit log "<summary>" --outcome ...
+    ├── sessions.ts     # claudit sessions
+    ├── map.ts          # claudit map
+    ├── info.ts         # claudit info
+    ├── recall.ts       # claudit recall   (was get_context)
+    └── profile.ts      # claudit profile {list,set,show,current,clear,drift}
 ```
+
+Each command file is a pure function returning `{ text, json }`. `cli.ts` parses
+argv, calls the command, prints `text` (default) or `JSON.stringify(json)` if
+`--json` is passed.
 
 ## Storage
 
-Single SQLite database at `~/.local/share/claudit/knowledge.db` (override: `$CLAUDIT_DB`).
-Tables: `knowledge` (FTS5-indexed), `file_roles`, `sessions`.
-No external services required. Ollama enhances semantic search if running.
+Single SQLite database at `~/.local/share/claudit/knowledge.db` (override:
+`$CLAUDIT_DB`). Tables: `knowledge` (FTS5-indexed), `file_roles`, `sessions`,
+`contexts`. No external services required. Ollama enhances semantic search
+and powers drift detection if running.
 
-## Build and run
+Active context profile state lives in `~/.local/share/claudit/active-context.json`
+(override: `$CLAUDIT_ACTIVE_FILE`). The `claudit run` wrapper writes it on
+session start and removes it on session end. Read by the status line and by
+`claudit profile drift`.
+
+## Install
 
 ```bash
 npm install
-npm run build         # tsc → dist/
-npm start             # stdio MCP server
-node dist/cli.js info # CLI
+npm run build                      # tsc → dist/
+ln -sf "$PWD/dist/cli.js" ~/.local/bin/claudit  # or wherever your bin dir is
+chmod +x dist/cli.js
+claudit info                       # verify
 ```
 
-## MCP configuration (add to Claude Code settings)
+(`npm link` works too if you have write access to your global node_modules.)
 
-```json
-{
-  "mcpServers": {
-    "claudit": {
-      "command": "node",
-      "args": ["/path/to/claudit-logging/dist/index.js"]
-    }
-  }
-}
-```
+## Commands
 
-## The 6 tools
-
-| Tool | When to call |
+| Command | When to use |
 |---|---|
-| `get_context` | **Start of every session** — loads prior work without file reads |
-| `search_knowledge` | **Before solving any non-trivial problem** — check if already solved |
-| `add_knowledge` | **After solving something** — solution, pattern, gotcha, decision, reference |
-| `get_project_map` | **Instead of ls/find** — annotated tree is more informative |
-| `annotate_file` | **After reading a significant file** — one-liner for future sessions |
-| `log_session` | **End of session** — links outcome + knowledge ids created |
+| `claudit run [-- claude-args...]` | **Launch a session** — picks profile, spawns claude, logs on exit |
+| `claudit recall` | **Start of every session** — loads prior sessions + top knowledge |
+| `claudit search "<query>"` | **Before solving any non-trivial problem** — check if already solved |
+| `claudit add <type> --title ... --content ...` | **After solving something** |
+| `claudit map [dir]` | **Instead of ls/find** — annotated tree |
+| `claudit annotate <path> "<role>"` | **After reading a significant file** |
+| `claudit log "<summary>" --outcome ...` | **End of session** |
+| `claudit profile list` | See saved focus profiles for the project |
+| `claudit profile set <name> [-d "..."]` | Activate (or create) a focus profile |
+| `claudit profile delete <name>` | Remove a saved profile (and clear it if active) |
+| `claudit profile drift "<task>"` | Check if a task has drifted from the active focus |
+| `claudit link <from> <to> [--kind ...]` | Cross-link two knowledge items |
+| `claudit unlink <from> <to>` | Remove a link |
+| `claudit topic <id>` | Print a topic synthesis with all `parent`-linked children inline |
+| `claudit lint` | Health check — duplicates, orphans, stale topics, singleton tags |
 
-## Knowledge types
+### Knowledge types
 
-- **solution** — how to solve a specific problem in this project
-- **pattern** — reusable code convention or idiom
-- **gotcha** — something that doesn't work / edge case / trap
-- **decision** — architectural choice and its rationale
-- **reference** — external doc, API detail, or library note
+- `solution` — how to solve a specific problem in this project
+- `pattern` — reusable code convention or idiom
+- `gotcha` — something that doesn't work / edge case / trap
+- `decision` — architectural choice and its rationale
+- `reference` — external doc, API detail, or library note
+- `topic` — LLM-maintained synthesis page rolling up many leaves; children are
+  attached via `claudit link <leaf> <topic> --kind parent`
+
+### Cross-links and topics (wiki model)
+
+Knowledge items are nodes in a graph, not isolated facts. Links are typed and
+directional: `related` (default), `supersedes` (use for dedupe), `contradicts`
+(flag for review), `parent` (child → topic). When `claudit add` finds items
+above 0.75 cosine similarity to the new item, it prints them as link
+suggestions — non-blocking, you decide whether to call `claudit link`.
+
+`claudit search` and `claudit recall` print each item's link neighborhood inline,
+so following the graph is one fetch, not many. `claudit topic <id>` returns the
+whole subtree (synthesis + every child) in one shot — read this before opening
+individual leaves.
+
+### Profile-as-lens (not silo)
+
+Profiles do **not** scope knowledge — knowledge is keyed by project. When a
+profile is active and Ollama is up, `claudit recall` re-ranks the project's
+knowledge by cosine similarity to the active profile's anchor. Same items, new
+order. A solution added under one profile automatically surfaces under another
+when relevant. Profiles are queries, not folders.
+
+### Global flags
+
+- `--json` — emit machine-readable JSON instead of human text
+- `--project P` — override project auto-detection
+- `--cwd D` — override working directory (used for project detection)
+- `--type T` — filter by knowledge type
+- `--limit N` — result limit
 
 ## Recommended session workflow
 
-**Session start:**
-1. Call `get_context` — orients Claude without file reads
-2. Call `search_knowledge` with the task description — surfaces prior work
-3. Call `get_project_map` if unfamiliar with the codebase structure
+**Launch:** `claudit run` (or `claudit run --profile <name> -- <claude-args...>`).
+The wrapper picks a profile interactively (or uses `--profile`), then spawns
+`claude`. On exit it prompts for a session log.
 
-**During session:**
-- After solving a non-trivial problem: `add_knowledge` (type: solution)
-- After reading a key file: `annotate_file`
-- After discovering a gotcha or making a decision: `add_knowledge`
+**During session (inside claude):**
+- `claudit recall` — orient yourself without file reads
+- `claudit search "<task description>"` — surface prior work
+- `claudit map` if unfamiliar with the codebase structure
+- After solving a non-trivial problem: `claudit add solution --title "..." --content "..."`
+- After reading a key file: `claudit annotate src/foo.ts "what it does"`
+- After discovering a gotcha or making a decision: `claudit add gotcha|decision ...`
+- If the user pivots to something unrelated: `claudit profile drift "<new task>"`
 
-**Session end:**
-- Call `log_session` with summary, outcome, and ids of knowledge created
+**Session end:** handled by the wrapper — it prompts for summary and outcome.
 
-## CLI commands
+## Context profiles
+
+A profile is a named focus area within a project (e.g. `mcp-rewrite`,
+`cli-refactor`, `bug-triage`). Each has a description that serves as the
+**drift anchor** — a semantic baseline against which `claudit profile drift`
+compares incoming tasks.
+
+The active profile is shown in the Claude Code status line and is enforced at
+session start by the `claudit run` wrapper (interactive picker if `--profile`
+is not provided).
 
 ```bash
-claudit search "migrations test database"   # search without Claude
-claudit list --type solution                # list all solutions
-claudit sessions                            # recent sessions for this project
-claudit map                                 # file tree for current project
-claudit info                                # DB stats
-claudit delete <id>                         # remove stale item
+claudit profile set claudit-rewrite -d "Rewrite claudit from MCP to pure CLI"
+claudit profile drift "fix the dist/ build output"          # → on-topic
+claudit profile drift "deploy the production database"     # → DRIFT
 ```
 
 ## Environment variables
@@ -100,20 +157,34 @@ claudit delete <id>                         # remove stale item
 | Variable | Default | Description |
 |---|---|---|
 | `CLAUDIT_DB` | `~/.local/share/claudit/knowledge.db` | SQLite DB path |
+| `CLAUDIT_ACTIVE_FILE` | `~/.local/share/claudit/active-context.json` | Active profile state |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `OLLAMA_CHAT_MODEL` | `llama3` | Chat model (session summary generation) |
 
 ## Design decisions
 
-- **SQLite + FTS5** over ChromaDB — zero external services, FTS5 is fast enough for thousands of items
-- **Cosine similarity in JS** for re-ranking when Ollama available — sufficient at this scale
-- **Project auto-detection** via `git remote get-url origin` — stable ID across machines
-- **Global knowledge** (project = '') — patterns that apply everywhere
-- **CLI mirrors MCP** — manage knowledge base directly without a Claude session
-- **No Obsidian dependency** — plain SQLite, no vault path required
+- **Pure CLI, no MCP.** Universal interop (cron, shell aliases, other AI tools),
+  reproducible from a transcript, no protocol coupling, single source of truth.
+- **SQLite + FTS5** over ChromaDB — zero external services, FTS5 is fast enough
+  for thousands of items.
+- **Cosine similarity in JS** for re-ranking and drift detection when Ollama
+  available — sufficient at this scale.
+- **Project auto-detection** via `git remote get-url origin` — stable ID across
+  machines and clones.
+- **Global knowledge** (project = '') — patterns that apply everywhere.
+- **`{text, json}` command results** — humans get formatted output, scripts
+  (and Claude, via `--json`) get structured data.
+- **Drift anchor = profile description** — the user knows what they're working
+  on; let them name it once at session start, then compare every new task
+  against that anchor instead of guessing from the prompt history.
 
 ## Known limitations
 
-- Semantic search requires Ollama running with `nomic-embed-text` pulled
+- Semantic search and drift detection require Ollama running with `nomic-embed-text` pulled
 - FTS5 porter stemmer may miss highly technical terms — use multiple query phrasings
-- `get_project_map` ignores `node_modules`, `.git`, `dist`, `build` by default
+- `claudit map` ignores `node_modules`, `.git`, `dist`, `build` by default
+- Each `claudit run` session gets its own state file (`active-context-<uuid>.json`)
+  via `CLAUDIT_ACTIVE_FILE`, so concurrent sessions don't collide. The status
+  line reads the global fallback file and may show "none" when only session-scoped
+  files exist.

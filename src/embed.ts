@@ -5,6 +5,7 @@
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? "nomic-embed-text";
+const CHAT_MODEL = process.env.OLLAMA_CHAT_MODEL ?? "llama3";
 
 let ollamaAvailable: boolean | null = null;
 
@@ -31,6 +32,23 @@ export async function embed(text: string): Promise<number[] | null> {
     if (!res.ok) return null;
     const data = (await res.json()) as { embedding?: number[] };
     return data.embedding ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function generate(prompt: string): Promise<string | null> {
+  if (!(await checkOllama())) return null;
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: CHAT_MODEL, prompt, stream: false }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { response?: string };
+    return data.response?.trim() ?? null;
   } catch {
     return null;
   }
