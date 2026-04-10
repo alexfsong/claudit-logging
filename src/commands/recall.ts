@@ -17,20 +17,29 @@ export function recall(args: {
   cwd?: string;
   session_limit?: number;
   knowledge_limit?: number;
+  global?: boolean;
 }): CommandResult {
   const db = getDb();
-  const project = args.project ?? detectProject(args.cwd);
+  const project = args.global ? null : (args.project ?? detectProject(args.cwd));
   const sessionLimit = args.session_limit ?? 5;
   const knowledgeLimit = args.knowledge_limit ?? 10;
 
-  const sessions = db
-    .prepare(
-      `SELECT * FROM sessions
-       WHERE project = ?
-       ORDER BY created_at DESC
-       LIMIT ?`
-    )
-    .all(project, sessionLimit) as SessionRow[];
+  const sessions = project !== null
+    ? db
+        .prepare(
+          `SELECT * FROM sessions
+           WHERE project = ?
+           ORDER BY created_at DESC
+           LIMIT ?`
+        )
+        .all(project, sessionLimit) as SessionRow[]
+    : db
+        .prepare(
+          `SELECT * FROM sessions
+           ORDER BY created_at DESC
+           LIMIT ?`
+        )
+        .all(sessionLimit) as SessionRow[];
 
   // Default ordering: topics first (synthesis hubs), then solutions/gotchas/etc, then date.
   const defaultOrder = `CASE type
@@ -41,6 +50,12 @@ export function recall(args: {
        WHEN 'decision'  THEN 4
        ELSE 5
      END, created_at DESC`;
+
+  // Knowledge project filter: global mode returns all, otherwise scoped + global items.
+  const knowledgeWhere = project !== null
+    ? `WHERE project = ? OR project = ''`
+    : `WHERE 1=1`;
+  const knowledgeParams = project !== null ? [project] : [];
 
   // Profile-as-lens: if a profile is active and has an embedding, re-rank the
   // project's knowledge by cosine similarity to the anchor. Topics still float to
@@ -57,11 +72,8 @@ export function recall(args: {
       ctx && ctx.embedding ? (JSON.parse(ctx.embedding) as number[]) : null;
     if (anchorVec) {
       const all = db
-        .prepare(
-          `SELECT * FROM knowledge
-           WHERE project = ? OR project = ''`
-        )
-        .all(project) as KnowledgeRow[];
+        .prepare(`SELECT * FROM knowledge ${knowledgeWhere}`)
+        .all(...knowledgeParams) as KnowledgeRow[];
       const scored = all.map((row) => {
         const sim = row.embedding
           ? cosine(anchorVec, JSON.parse(row.embedding) as number[])
@@ -81,30 +93,35 @@ export function recall(args: {
       knowledge = db
         .prepare(
           `SELECT * FROM knowledge
-           WHERE project = ? OR project = ''
+           ${knowledgeWhere}
            ORDER BY ${defaultOrder}
            LIMIT ?`
         )
-        .all(project, knowledgeLimit) as KnowledgeRow[];
+        .all(...knowledgeParams, knowledgeLimit) as KnowledgeRow[];
     }
   } else {
     knowledge = db
       .prepare(
         `SELECT * FROM knowledge
-         WHERE project = ? OR project = ''
+         ${knowledgeWhere}
          ORDER BY ${defaultOrder}
          LIMIT ?`
       )
-      .all(project, knowledgeLimit) as KnowledgeRow[];
+      .all(...knowledgeParams, knowledgeLimit) as KnowledgeRow[];
   }
 
-  const { count: annotatedCount } = db
-    .prepare(
-      `SELECT COUNT(*) AS count FROM file_roles WHERE project = ? OR project = ''`
-    )
-    .get(project) as { count: number };
+  const { count: annotatedCount } = project !== null
+    ? db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM file_roles WHERE project = ? OR project = ''`
+        )
+        .get(project) as { count: number }
+    : db
+        .prepare(`SELECT COUNT(*) AS count FROM file_roles`)
+        .get() as { count: number };
 
-  const lines: string[] = [`## Context for: ${project || "(global)"}`, ""];
+  const label = project !== null ? (project || "(global)") : "all projects";
+  const lines: string[] = [`## Context for: ${label}`, ""];
 
   if (sessions.length > 0) {
     lines.push("### Recent sessions");

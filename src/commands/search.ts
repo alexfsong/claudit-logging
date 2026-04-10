@@ -19,10 +19,11 @@ export async function search(args: {
   cwd?: string;
   type?: string;
   limit?: number;
+  global?: boolean;
 }): Promise<CommandResult> {
   const db = getDb();
   const limit = Math.min(args.limit ?? 8, 20);
-  const project = args.project ?? detectProject(args.cwd);
+  const project = args.global ? null : (args.project ?? detectProject(args.cwd));
 
   const ftsQuery = args.query
     .replace(/[^\w\s]/g, " ")
@@ -39,18 +40,23 @@ export async function search(args: {
     params.push(args.type);
   }
 
+  const projectClause = project !== null
+    ? `AND (k.project = ? OR k.project = '')`
+    : "";
+  const projectParams = project !== null ? [project] : [];
+
   const ftsRows = db
     .prepare(
       `SELECT k.*, bm25(knowledge_fts) AS score
        FROM knowledge k
        JOIN knowledge_fts ON knowledge_fts.rowid = k.id
        WHERE knowledge_fts MATCH ?
-         AND (k.project = ? OR k.project = '')
+         ${projectClause}
          ${typeClause}
        ORDER BY score
        LIMIT ?`
     )
-    .all(ftsQuery || '""', project, ...params, limit * 2) as (KnowledgeRow & {
+    .all(ftsQuery || '""', ...projectParams, ...params, limit * 2) as (KnowledgeRow & {
     score: number;
   })[];
 
@@ -62,11 +68,11 @@ export async function search(args: {
       .prepare(
         `SELECT k.* FROM knowledge k
          WHERE k.embedding IS NOT NULL
-           AND (k.project = ? OR k.project = '')
+           ${projectClause}
            ${typeClause}
          LIMIT 200`
       )
-      .all(project, ...params) as KnowledgeRow[];
+      .all(...projectParams, ...params) as KnowledgeRow[];
 
     const scored = allWithEmbeddings.map((row) => {
       const vec = JSON.parse(row.embedding!) as number[];

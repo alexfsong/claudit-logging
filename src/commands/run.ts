@@ -11,18 +11,17 @@
 import { spawn, execFileSync } from "child_process";
 import { createInterface } from "readline/promises";
 import { randomUUID } from "crypto";
-import { rmSync } from "fs";
+import { readFileSync, rmSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { stdin, stdout } from "process";
 
-import type { CommandResult } from "./types.js";
 import { profileSet } from "./profile.js";
 import { logSession, type Outcome } from "./log.js";
 import { getDb, type ContextRow, type KnowledgeRow } from "../db.js";
 import { detectProject } from "../project.js";
-import { readActiveContext } from "../activeContext.js";
-import { generate } from "../embed.js";
+import { readActiveContext, type ActiveContext } from "../activeContext.js";
+import { generateSummary } from "../embed.js";
 
 // ── Tiny interactive helpers ────────────────────────────────────────────────
 
@@ -47,6 +46,78 @@ async function pick(
   const idx = parseInt(answer, 10) - 1;
   if (idx < 0 || idx >= options.length || isNaN(idx)) return null;
   return options[idx].value;
+}
+
+// ── Session context helpers ─────────────────────────────────────────────────
+
+function buildSystemPromptInjection(active: ActiveContext | null): string {
+  const lines = [
+    "You have access to the `claudit` CLI for persistent, cross-session knowledge capture. Follow this workflow:",
+    "",
+    "SESSION START (do these before anything else):",
+    "  claudit recall                          # load prior sessions + knowledge for this project",
+    "  claudit search \"<task description>\"     # surface prior solutions before starting any task",
+    "",
+    "DURING SESSION:",
+    "  claudit map [dir]                       # use instead of ls/find to explore the codebase",
+    "  claudit annotate <path> \"<role>\"        # after reading any significant file",
+    "  claudit add solution --title \"...\" --content \"...\"   # after solving a non-trivial problem",
+    "  claudit add pattern|gotcha|decision ... # after discovering a pattern, trap, or making a decision",
+    "  claudit profile drift \"<new task>\"      # if the user pivots to something unrelated",
+    "",
+    "SESSION END:",
+    "  claudit log \"<summary>\" --outcome solved|partial|blocked|exploratory --ids <knowledge ids>",
+  ];
+  if (active) {
+    lines.push("", `Active profile: ${active.name} — ${active.description}`);
+  }
+  return lines.join("\n");
+}
+
+function getClaudeSessionId(pid: number | undefined): string | null {
+  if (!pid) return null;
+  try {
+    const path = join(homedir(), ".claude", "sessions", `${pid}.json`);
+    const data = JSON.parse(readFileSync(path, "utf8"));
+    return data.sessionId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function getSessionHistory(sessionId: string | null, sessionStartMs: number): string[] {
+  try {
+    const historyPath = join(homedir(), ".claude", "history.jsonl");
+    const lines = readFileSync(historyPath, "utf8").split("\n").filter(Boolean);
+    const prompts: string[] = [];
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line);
+        if (!entry.display) continue;
+        if (sessionId && entry.sessionId === sessionId) {
+          prompts.push(entry.display);
+        } else if (!sessionId && entry.timestamp >= sessionStartMs) {
+          prompts.push(entry.display);
+        }
+      } catch { continue; }
+    }
+    return prompts.slice(-20);
+  } catch {
+    return [];
+  }
+}
+
+function getGitDiffStat(preHead: string | null, cwd?: string): string {
+  if (!preHead) return "";
+  try {
+    return execFileSync("git", ["diff", "--stat", preHead], {
+      cwd: cwd ?? process.cwd(),
+      encoding: "utf8",
+      timeout: 5000,
+    }).trim().slice(0, 2000);
+  } catch {
+    return "";
+  }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -131,7 +202,17 @@ export async function run(args: {
     }
   }
 
-  // ── 2. Verify `claude` is on PATH ──────────────────────────────────────
+  // ── 2. Inject claudit instructions into session ────────────────────────
+
+  const active = readActiveContext();
+  if (!args.passthrough.includes("--append-system-prompt")) {
+    args.passthrough.unshift(
+      "--append-system-prompt",
+      buildSystemPromptInjection(active),
+    );
+  }
+
+  // ── 3. Verify `claude` is on PATH ────────────────────────────────────
 
   let claudePath: string;
   try {
@@ -142,16 +223,29 @@ export async function run(args: {
     return 1;
   }
 
-  // ── 3. Spawn claude ────────────────────────────────────────────────────
+  // ── 4. Spawn claude ──────────────────────────────────────────────────
 
-  const sessionStart = new Date().toISOString().replace("T", " ").slice(0, 19);
+  const sessionStartMs = Date.now();
+  const sessionStart = new Date(sessionStartMs).toISOString().replace("T", " ").slice(0, 19);
+
+  let preSessionHead: string | null = null;
+  try {
+    preSessionHead = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: args.cwd ?? process.cwd(),
+      encoding: "utf8",
+      timeout: 3000,
+    }).trim();
+  } catch {}
+
   console.log("\nLaunching claude...\n");
 
+  let childPid: number | undefined;
   const exitCode = await new Promise<number>((resolve) => {
     const child = spawn(claudePath, args.passthrough, {
       stdio: "inherit",
       env: { ...process.env, CLAUDIT_WRAPPED: "1", CLAUDIT_ACTIVE_FILE: sessionFile },
     });
+    childPid = child.pid;
 
     child.on("exit", (code) => resolve(code ?? 1));
     child.on("error", (err) => {
@@ -160,14 +254,21 @@ export async function run(args: {
     });
   });
 
-  // ── 4. Session log ────────────────────────────────────────────────────
+  // ── 5. Session log ────────────────────────────────────────────────────
+
+  // Wait for claude's TUI cleanup to finish writing to the terminal,
+  // then reset the terminal state before our readline prompts.
+  await new Promise((r) => setTimeout(r, 300));
+  process.stdout.write("\x1b[0m\x1b[?25h"); // reset attrs, show cursor
 
   console.log(`\nclaude exited (code ${exitCode}).`);
 
   try {
-    // Gather context for auto-summary: profile + knowledge added this session.
-    const active = readActiveContext();
+    // Gather rich context for auto-summary.
     const db = getDb();
+    const claudeSessionId = getClaudeSessionId(childPid);
+    const userPrompts = getSessionHistory(claudeSessionId, sessionStartMs);
+    const gitDiff = getGitDiffStat(preSessionHead, args.cwd);
     const recentKnowledge = db
       .prepare(
         `SELECT id, type, title FROM knowledge
@@ -177,21 +278,30 @@ export async function run(args: {
       .all(project, sessionStart) as Pick<KnowledgeRow, "id" | "type" | "title">[];
 
     let draft: string | null = null;
-    if (active || recentKnowledge.length) {
-      console.log("\nGenerating session summary...");
-      const promptParts = [];
-      if (active) promptParts.push(`Profile: ${active.name} — ${active.description}`);
-      if (recentKnowledge.length) {
-        promptParts.push("Knowledge added this session:");
-        for (const k of recentKnowledge) {
-          promptParts.push(`  [${k.id}] ${k.type.toUpperCase()}: ${k.title}`);
-        }
+    const promptParts: string[] = [];
+    if (active) promptParts.push(`Profile: ${active.name} — ${active.description}`);
+    if (userPrompts.length) {
+      promptParts.push("User prompts this session:");
+      for (const p of userPrompts) {
+        promptParts.push(`  - ${p.slice(0, 200)}`);
       }
+    }
+    if (gitDiff) {
+      promptParts.push("Files changed (git diff --stat):", gitDiff);
+    }
+    if (recentKnowledge.length) {
+      promptParts.push("Knowledge captured:");
+      for (const k of recentKnowledge) {
+        promptParts.push(`  [${k.id}] ${k.type.toUpperCase()}: ${k.title}`);
+      }
+    }
+    if (promptParts.length > 0) {
       promptParts.push(
         "",
-        "Write a 1-2 sentence session summary for a developer log. Be concise and specific. Return only the summary, nothing else."
+        "Write a 1-2 sentence session summary for a developer log. Be concise and specific about what was accomplished. Return only the summary, nothing else."
       );
-      draft = await generate(promptParts.join("\n"));
+      console.log("\nGenerating session summary...");
+      draft = await generateSummary(promptParts.join("\n"));
     }
 
     let summary: string;
@@ -236,7 +346,7 @@ export async function run(args: {
     );
   }
 
-  // ── 5. Clean up ───────────────────────────────────────────────────────
+  // ── 6. Clean up ───────────────────────────────────────────────────────
 
   try {
     rmSync(sessionFile);

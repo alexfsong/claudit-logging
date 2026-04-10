@@ -49,7 +49,11 @@
       "Bash(rm -f ~/.claude/session-context-prompted-*)",
       "Bash(claudit --help)",
       "Bash(claudit profile:*)",
-      "Bash(claudit run:*)"
+      "Bash(claudit run:*)",
+      "Bash(claudit recall:*)",
+      "Bash(claudit add:*)",
+      "Bash(claudit link:*)",
+      "Bash(claude:*)"
     ]
   }
 }

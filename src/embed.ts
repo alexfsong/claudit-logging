@@ -3,6 +3,8 @@
  * via FTS5 when Ollama is unavailable.
  */
 
+import { execFileSync } from "child_process";
+
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL ?? "nomic-embed-text";
 const CHAT_MODEL = process.env.OLLAMA_CHAT_MODEL ?? "llama3";
@@ -52,6 +54,22 @@ export async function generate(prompt: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+export function generateWithClaude(prompt: string): string | null {
+  try {
+    const result = execFileSync("claude", ["--print", "--model", "haiku", prompt], {
+      encoding: "utf8",
+      timeout: 30_000,
+    });
+    return result.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export async function generateSummary(prompt: string): Promise<string | null> {
+  return generateWithClaude(prompt) ?? generate(prompt);
 }
 
 export function cosine(a: number[], b: number[]): number {

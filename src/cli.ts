@@ -164,6 +164,7 @@ Commands:
 
 Flags:
   --json                         Machine-readable JSON output
+  --global                       Search/recall across all projects
   --project P                    Override project auto-detection
   --cwd D                        Override working directory
   --type T                       Filter by knowledge type
@@ -222,6 +223,7 @@ Flags:
           cwd,
           session_limit: flagInt(p, "sessions"),
           knowledge_limit: flagInt(p, "limit"),
+          global: !!p.flags.global,
         }),
         json
       );
@@ -238,6 +240,7 @@ Flags:
           cwd,
           type: flagStr(p, "type"),
           limit: flagInt(p, "limit"),
+          global: !!p.flags.global,
         }),
         json
       );

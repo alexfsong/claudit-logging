@@ -11,9 +11,12 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 
-const ACTIVE_FILE =
-  process.env.CLAUDIT_ACTIVE_FILE ??
-  join(homedir(), ".local", "share", "claudit", "active-context.json");
+function getActiveFile(): string {
+  return (
+    process.env.CLAUDIT_ACTIVE_FILE ??
+    join(homedir(), ".local", "share", "claudit", "active-context.json")
+  );
+}
 
 export interface ActiveContext {
   context_id: number;
@@ -24,24 +27,24 @@ export interface ActiveContext {
 }
 
 export function activeContextPath(): string {
-  return ACTIVE_FILE;
+  return getActiveFile();
 }
 
 export function readActiveContext(): ActiveContext | null {
-  if (!existsSync(ACTIVE_FILE)) return null;
+  if (!existsSync(getActiveFile())) return null;
   try {
-    return JSON.parse(readFileSync(ACTIVE_FILE, "utf8")) as ActiveContext;
+    return JSON.parse(readFileSync(getActiveFile(), "utf8")) as ActiveContext;
   } catch {
     return null;
   }
 }
 
 export function writeActiveContext(ctx: ActiveContext): void {
-  const dir = dirname(ACTIVE_FILE);
+  const dir = dirname(getActiveFile());
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  writeFileSync(ACTIVE_FILE, JSON.stringify(ctx, null, 2));
+  writeFileSync(getActiveFile(), JSON.stringify(ctx, null, 2));
 }
 
 export function clearActiveContext(): void {
-  if (existsSync(ACTIVE_FILE)) rmSync(ACTIVE_FILE);
+  if (existsSync(getActiveFile())) rmSync(getActiveFile());
 }

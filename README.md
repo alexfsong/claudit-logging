@@ -36,26 +36,27 @@ The SQLite database is created automatically on first use at
 If `~/.local/bin` isn't on your `PATH`, symlink to whichever bin dir is —
 `/usr/local/bin`, `~/bin`, etc. `npm link` works too if you have write access
 to your global `node_modules`.
+V
 
 ---
 
 ## Commands
 
-| Command | When to call |
-|---|---|
-| `claudit recall` | **Start of every session** — loads recent sessions + top knowledge |
-| `claudit search "<query>"` | **Before solving any non-trivial problem** |
-| `claudit add <type> --title "..." --content "..."` | **After solving something** |
-| `claudit map [dir]` | **Instead of ls/find** — annotated file tree |
-| `claudit annotate <path> "<role>"` | **After reading a significant file** |
-| `claudit log "<summary>" --outcome ...` | **End of every session** |
-| `claudit profile list` | See saved focus profiles for the project |
-| `claudit profile set <name> [-d "..."]` | Activate (or create) a focus profile |
-| `claudit profile drift "<task>"` | Check if a task has drifted from active focus |
-| `claudit link <from> <to> [--kind ...]` | Cross-link two knowledge items |
-| `claudit unlink <from> <to>` | Remove a link |
-| `claudit topic <id>` | Print a topic synthesis with all `parent`-linked children |
-| `claudit lint` | Health check (duplicates, orphans, stale topics, tag drift) |
+| Command                                            | When to call                                                       |
+| -------------------------------------------------- | ------------------------------------------------------------------ |
+| `claudit recall`                                   | **Start of every session** — loads recent sessions + top knowledge |
+| `claudit search "<query>"`                         | **Before solving any non-trivial problem**                         |
+| `claudit add <type> --title "..." --content "..."` | **After solving something**                                        |
+| `claudit map [dir]`                                | **Instead of ls/find** — annotated file tree                       |
+| `claudit annotate <path> "<role>"`                 | **After reading a significant file**                               |
+| `claudit log "<summary>" --outcome ...`            | **End of every session**                                           |
+| `claudit profile list`                             | See saved focus profiles for the project                           |
+| `claudit profile set <name> [-d "..."]`            | Activate (or create) a focus profile                               |
+| `claudit profile drift "<task>"`                   | Check if a task has drifted from active focus                      |
+| `claudit link <from> <to> [--kind ...]`            | Cross-link two knowledge items                                     |
+| `claudit unlink <from> <to>`                       | Remove a link                                                      |
+| `claudit topic <id>`                               | Print a topic synthesis with all `parent`-linked children          |
+| `claudit lint`                                     | Health check (duplicates, orphans, stale topics, tag drift)        |
 
 ### Knowledge types
 
@@ -102,11 +103,13 @@ from Karpathy's "LLM Wiki" pattern fight fragmentation:
 ## Session workflow (for Claude)
 
 **Session start:**
+
 1. `claudit recall` — orient yourself without file reads
 2. `claudit profile show` — verify which focus area is active
 3. `claudit search "<task description>"` — surface prior work
 
 **During session:**
+
 - After solving a non-trivial problem → `claudit add solution ...`
 - After reading a key file → `claudit annotate src/foo.ts "what it does"`
 - After a gotcha or decision → `claudit add gotcha|decision ...`
@@ -114,6 +117,7 @@ from Karpathy's "LLM Wiki" pattern fight fragmentation:
   then `claudit log` + `claudit profile set <new>`
 
 **Session end:**
+
 - `claudit log "<summary>" --outcome solved --ids 1,2,3`
 
 ---
@@ -151,12 +155,12 @@ see `CLAUDE.md` for the full pattern.
 
 ## Environment variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `CLAUDIT_DB` | `~/.local/share/claudit/knowledge.db` | SQLite DB path |
+| Variable              | Default                                      | Description          |
+| --------------------- | -------------------------------------------- | -------------------- |
+| `CLAUDIT_DB`          | `~/.local/share/claudit/knowledge.db`        | SQLite DB path       |
 | `CLAUDIT_ACTIVE_FILE` | `~/.local/share/claudit/active-context.json` | Active profile state |
-| `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `OLLAMA_URL`          | `http://localhost:11434`                     | Ollama endpoint      |
+| `OLLAMA_EMBED_MODEL`  | `nomic-embed-text`                           | Embedding model      |
 
 ---
 
@@ -172,21 +176,25 @@ every project.
 ## Troubleshooting
 
 **`claudit: command not found`**
+
 - Verify the symlink: `ls -l $(which claudit)` should point at `dist/cli.js`
 - `chmod +x dist/cli.js`
 - `~/.local/bin` must be on `PATH`
 
 **Semantic search / drift not working**
+
 - Ollama is optional; FTS5 search still works without it
 - To enable: `ollama pull nomic-embed-text` and `ollama serve`
 - Test: `curl http://localhost:11434/api/embeddings -d '{"model":"nomic-embed-text","prompt":"test"}'`
 
 **`claudit search` returns no results**
+
 - Try broader terms — FTS5 uses porter stemming
 - `claudit list` to confirm items exist
 - `claudit info` for DB stats
 
 **Build errors**
+
 - `npm install` before `npm run build`
 - Requires Node.js 18+
 
