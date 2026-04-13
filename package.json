@@ -1,21 +1,20 @@
 {
-  "name": "claude-obsidian-mcp",
-  "version": "1.0.0",
-  "description": "MCP server for tracking Claude sessions in Obsidian with semantic search",
+  "name": "claudit",
+  "version": "3.0.0",
+  "description": "Local optimization suite for Claude Code — persistent project knowledge base, CLI-only",
   "type": "module",
-  "main": "dist/index.js",
+  "bin": {
+    "claudit": "dist/cli.js"
+  },
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
+    "build": "tsc && chmod +x dist/cli.js",
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "fs-extra": "^11.2.0",
-    "gray-matter": "^4.0.3"
+    "better-sqlite3": "^11.0.0"
   },
   "devDependencies": {
-    "@types/fs-extra": "^11.0.4",
+    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
   },

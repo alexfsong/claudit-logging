@@ -1,141 +1,190 @@
-# claude-obsidian-mcp
+# claudit — Local Optimization Suite for Claude Code
 
-MCP server that logs Claude sessions to an Obsidian vault with semantic search and local LLM analysis.
+A pure CLI tool that gives Claude Code (or any other tool that can run shell
+commands) a persistent, project-aware knowledge base. Maximizes token efficiency
+by replacing file exploration with accumulated knowledge.
+
+**No MCP server.** No daemon. One binary, one SQLite file. Claude calls `claudit`
+via its Bash tool exactly the way you would in your terminal.
 
 ## Architecture
 
 ```
 src/
-├── index.ts                        # MCP server entry, tool registration and routing
-├── embedding/
-│   └── pipeline.ts                 # Ollama embeddings + ChromaDB client + note chunking
-└── tools/
-    ├── logSession.ts               # Write session note, trigger embed + context extraction
-    ├── updateSession.ts            # Add rating/notes to existing session, re-embed
-    ├── extractSolution.ts          # Create standalone solution note from a session
-    ├── searchVault.ts              # Semantic search via ChromaDB query
-    ├── loadContext.ts              # Read context profile + search for related prior work
-    ├── listContexts.ts             # Picker menu + createContext + updateContext impls
-    ├── createContext.ts            # Re-export from listContexts
-    ├── updateContext.ts            # Re-export from listContexts
-    ├── extractContextFromSession.ts # Ollama extracts interests/questions → merges into profile
-    ├── generateWeeklyReview.ts     # Aggregates sessions → Ollama JSON → review note
-    └── reindexVault.ts             # Rebuild ChromaDB from scratch
+├── cli.ts              # argv dispatcher — thin, calls into commands/
+├── db.ts               # SQLite + FTS5 schema (knowledge, sessions, file_roles, contexts)
+├── embed.ts            # Ollama embeddings — optional, graceful fallback to FTS5
+├── project.ts          # Git-based project detection, file tree builder
+├── activeContext.ts    # Active profile state file (~/.local/share/claudit/active-context.json)
+└── commands/
+    ├── types.ts        # CommandResult { text, json }
+    ├── add.ts          # claudit add <type> ...
+    ├── search.ts       # claudit search "<query>"
+    ├── list.ts         # claudit list
+    ├── delete.ts       # claudit delete <id>
+    ├── annotate.ts     # claudit annotate <path> "<role>"
+    ├── log.ts          # claudit log "<summary>" --outcome ...
+    ├── sessions.ts     # claudit sessions
+    ├── map.ts          # claudit map
+    ├── info.ts         # claudit info
+    ├── recall.ts       # claudit recall   (was get_context)
+    └── profile.ts      # claudit profile {list,set,show,current,clear,drift}
 ```
 
-## Key design decisions
+Each command file is a pure function returning `{ text, json }`. `cli.ts` parses
+argv, calls the command, prints `text` (default) or `JSON.stringify(json)` if
+`--json` is passed.
 
-- **Vault is source of truth.** ChromaDB is a search index only — can be deleted and rebuilt from vault at any time via `reindex_vault`.
-- **Every write triggers an embed.** `embedNote()` is called after every `log_session`, `update_session`, `extract_solution`, `create_context`, and `update_context`. It's async and non-blocking.
-- **Chunking by H2 heading.** Notes are split at `## ` boundaries so only relevant sections surface in search, not entire notes.
-- **Frontmatter is one chunk.** YAML frontmatter is serialized as a dense key:value chunk — highly searchable and gives metadata without reading the full body.
-- **Ollama for all local LLM work.** `ollamaEmbed()` uses `nomic-embed-text`. `ollamaGenerate()` uses `llama3.2` by default. Both hit `localhost:11434`.
-- **ChromaDB via REST.** No SDK — plain `fetch()` calls to `localhost:8000`. Collection is named `vault` and auto-created on first write.
-- **Context profiles never auto-overwrite curator sections.** `extractContextFromSession` only appends to `## Current interests` and `## Open questions`. `## Curator notes` and `## Context loader instructions` are untouched.
-- **`updateContext` and `createContext` are implemented in `listContexts.ts`** and re-exported via stubs for clean import paths in `index.ts`.
+## Storage
 
-## Local services
+Single SQLite database at `~/.local/share/claudit/knowledge.db` (override:
+`$CLAUDIT_DB`). Tables: `knowledge` (FTS5-indexed), `file_roles`, `sessions`,
+`contexts`. No external services required. Ollama enhances semantic search
+and powers drift detection if running.
 
-Both must be running for full functionality:
+Active context profile state lives in `~/.local/share/claudit/active-context.json`
+(override: `$CLAUDIT_ACTIVE_FILE`). The `claudit run` wrapper writes it on
+session start and removes it on session end. Read by the status line and by
+`claudit profile drift`.
 
-```bash
-# ChromaDB — keep in a background terminal
-chroma run --path /path/to/vault/_meta/_chroma
-
-# Ollama — usually already running as a background service
-ollama serve
-```
-
-Check both are up before debugging MCP tool failures:
-```bash
-curl http://localhost:8000/api/v1/heartbeat   # ChromaDB
-curl http://localhost:11434/api/tags          # Ollama
-```
-
-## Build and run
+## Install
 
 ```bash
 npm install
-npm run build          # tsc → dist/
-npm start              # runs dist/index.js (stdio MCP transport)
+npm run build                      # tsc → dist/
+ln -sf "$PWD/dist/cli.js" ~/.local/bin/claudit  # or wherever your bin dir is
+chmod +x dist/cli.js
+claudit info                       # verify
 ```
 
-TypeScript strict mode is on. `moduleResolution: Node16` — all local imports need `.js` extensions even in `.ts` files.
+(`npm link` works too if you have write access to your global node_modules.)
+
+## Commands
+
+| Command | When to use |
+|---|---|
+| `claudit run [-- claude-args...]` | **Launch a session** — picks profile, spawns claude, logs on exit |
+| `claudit recall` | **Start of every session** — loads prior sessions + top knowledge |
+| `claudit search "<query>"` | **Before solving any non-trivial problem** — check if already solved |
+| `claudit add <type> --title ... --content ...` | **After solving something** |
+| `claudit map [dir]` | **Instead of ls/find** — annotated tree |
+| `claudit annotate <path> "<role>"` | **After reading a significant file** |
+| `claudit log "<summary>" --outcome ...` | **End of session** |
+| `claudit profile list` | See saved focus profiles for the project |
+| `claudit profile set <name> [-d "..."]` | Activate (or create) a focus profile |
+| `claudit profile delete <name>` | Remove a saved profile (and clear it if active) |
+| `claudit profile drift "<task>"` | Check if a task has drifted from the active focus |
+| `claudit link <from> <to> [--kind ...]` | Cross-link two knowledge items |
+| `claudit unlink <from> <to>` | Remove a link |
+| `claudit topic <id>` | Print a topic synthesis with all `parent`-linked children inline |
+| `claudit lint` | Health check — duplicates, orphans, stale topics, singleton tags |
+
+### Knowledge types
+
+- `solution` — how to solve a specific problem in this project
+- `pattern` — reusable code convention or idiom
+- `gotcha` — something that doesn't work / edge case / trap
+- `decision` — architectural choice and its rationale
+- `reference` — external doc, API detail, or library note
+- `topic` — LLM-maintained synthesis page rolling up many leaves; children are
+  attached via `claudit link <leaf> <topic> --kind parent`
+
+### Cross-links and topics (wiki model)
+
+Knowledge items are nodes in a graph, not isolated facts. Links are typed and
+directional: `related` (default), `supersedes` (use for dedupe), `contradicts`
+(flag for review), `parent` (child → topic). When `claudit add` finds items
+above 0.75 cosine similarity to the new item, it prints them as link
+suggestions — non-blocking, you decide whether to call `claudit link`.
+
+`claudit search` and `claudit recall` print each item's link neighborhood inline,
+so following the graph is one fetch, not many. `claudit topic <id>` returns the
+whole subtree (synthesis + every child) in one shot — read this before opening
+individual leaves.
+
+### Profile-as-lens (not silo)
+
+Profiles do **not** scope knowledge — knowledge is keyed by project. When a
+profile is active and Ollama is up, `claudit recall` re-ranks the project's
+knowledge by cosine similarity to the active profile's anchor. Same items, new
+order. A solution added under one profile automatically surfaces under another
+when relevant. Profiles are queries, not folders.
+
+### Global flags
+
+- `--json` — emit machine-readable JSON instead of human text
+- `--project P` — override project auto-detection
+- `--cwd D` — override working directory (used for project detection)
+- `--type T` — filter by knowledge type
+- `--limit N` — result limit
+
+## Recommended session workflow
+
+**Launch:** `claudit run` (or `claudit run --profile <name> -- <claude-args...>`).
+The wrapper picks a profile interactively (or uses `--profile`), then spawns
+`claude`. On exit it prompts for a session log.
+
+**During session (inside claude):**
+- `claudit recall` — orient yourself without file reads
+- `claudit search "<task description>"` — surface prior work
+- `claudit map` if unfamiliar with the codebase structure
+- After solving a non-trivial problem: `claudit add solution --title "..." --content "..."`
+- After reading a key file: `claudit annotate src/foo.ts "what it does"`
+- After discovering a gotcha or making a decision: `claudit add gotcha|decision ...`
+- If the user pivots to something unrelated: `claudit profile drift "<new task>"`
+
+**Session end:** handled by the wrapper — it prompts for summary and outcome.
+
+## Context profiles
+
+A profile is a named focus area within a project (e.g. `mcp-rewrite`,
+`cli-refactor`, `bug-triage`). Each has a description that serves as the
+**drift anchor** — a semantic baseline against which `claudit profile drift`
+compares incoming tasks.
+
+The active profile is shown in the Claude Code status line and is enforced at
+session start by the `claudit run` wrapper (interactive picker if `--profile`
+is not provided).
+
+```bash
+claudit profile set claudit-rewrite -d "Rewrite claudit from MCP to pure CLI"
+claudit profile drift "fix the dist/ build output"          # → on-topic
+claudit profile drift "deploy the production database"     # → DRIFT
+```
 
 ## Environment variables
 
 | Variable | Default | Description |
 |---|---|---|
-| `VAULT_PATH` | required | Absolute path to Obsidian vault |
-| `OLLAMA_URL` | `http://localhost:11434` | |
-| `OLLAMA_MODEL` | `llama3.2` | Used for tag generation and weekly reviews |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Used for all embeddings |
-| `CHROMA_URL` | `http://localhost:8000` | |
-| `MODEL_NAME` | `claude-sonnet-4-6` | Written into session frontmatter only |
+| `CLAUDIT_DB` | `~/.local/share/claudit/knowledge.db` | SQLite DB path |
+| `CLAUDIT_ACTIVE_FILE` | `~/.local/share/claudit/active-context.json` | Active profile state |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `OLLAMA_CHAT_MODEL` | `llama3` | Chat model (session summary generation) |
 
-## Vault structure
+## Design decisions
 
-```
-vault/
-├── sessions/{area}/          # One .md per session, filed by life area
-├── solutions/{area}/         # Extracted solutions, standalone and searchable
-├── contexts/
-│   ├── technical/            # Technical project profiles
-│   └── topics/               # Open-ended topic profiles (music, ML, etc.)
-├── patterns/
-│   ├── weekly-reviews/       # Generated by generate_weekly_review
-│   ├── workflows.md
-│   └── context-gaps.md
-├── templates/                # session.md, context.md, weekly-review.md
-└── _meta/
-    ├── dashboard.md          # Dataview queries
-    └── _chroma/              # ChromaDB persistence (gitignored)
-```
+- **Pure CLI, no MCP.** Universal interop (cron, shell aliases, other AI tools),
+  reproducible from a transcript, no protocol coupling, single source of truth.
+- **SQLite + FTS5** over ChromaDB — zero external services, FTS5 is fast enough
+  for thousands of items.
+- **Cosine similarity in JS** for re-ranking and drift detection when Ollama
+  available — sufficient at this scale.
+- **Project auto-detection** via `git remote get-url origin` — stable ID across
+  machines and clones.
+- **Global knowledge** (project = '') — patterns that apply everywhere.
+- **`{text, json}` command results** — humans get formatted output, scripts
+  (and Claude, via `--json`) get structured data.
+- **Drift anchor = profile description** — the user knows what they're working
+  on; let them name it once at session start, then compare every new task
+  against that anchor instead of guessing from the prompt history.
 
-Life areas: `work` | `personal-projects` | `learning` | `health` | `hobbies`
+## Known limitations
 
-## Session frontmatter schema
-
-```yaml
-date, area, project, context_id, session_type, output_type, duration_mins, model,
-rating (1-5 filled post-session), context_provided (background/examples/constraints/prior_output booleans),
-key_output, gaps_noticed, solutions_extracted (array of paths), semantic_tags (Ollama-generated), tags
-```
-
-## Context profile schema
-
-```yaml
-title, type (topic|technical-project), area, status (active|paused|archived),
-date, last_used, auto_extracted, session_count
-```
-
-Body sections: `## Current interests & tastes`, `## Open questions I'm exploring`,
-`## Curator notes` (manual only), `## Context loader instructions` (manual only), `## Session history`
-
-## Current state
-
-- [x] Full MCP server scaffold with all 11 tools registered
-- [x] Embedding pipeline (Ollama + ChromaDB REST)
-- [x] Session logging with async embed and context extraction
-- [x] Semantic search across all vault content
-- [x] Context profiles with load/create/update/extract
-- [x] Solution extraction with backlink to source session
-- [x] Weekly review generation via Ollama
-- [x] Vault setup script
-- [ ] Not yet tested end-to-end — first run will surface integration issues
-- [ ] ChromaDB delete-by-path may need adjustment depending on ChromaDB version
-- [ ] Ollama JSON output reliability depends on model — may need retry logic
-
-## Known rough edges to watch for
-
-**ChromaDB version differences.** The REST API paths changed between v0.4 and v0.5. If `ensureCollection` or upsert calls fail with 404, check `chroma --version` and compare against the API paths in `pipeline.ts`.
-
-**Ollama JSON reliability.** `llama3.2` occasionally returns malformed JSON despite explicit prompting. Both `logSession` and `extractContextFromSession` have try/catch that silently skips on parse failure. If tags or context extraction never populate, add a `console.error` in those catch blocks to see what's coming back.
-
-**Embedding on first write is slow.** `nomic-embed-text` takes 1-3s per chunk on first load. Session logging won't feel slow (embed is async) but `reindex_vault` on a large vault will take a while.
-
-## Session workflow
-
-**Session start:** On the first substantive message of a new session, proactively ask the user if they want to load a context profile. If yes, call `list_contexts` to show available profiles, then `load_context` with the chosen id.
-
-**Session end:** Before the session ends (when the user signals they're done or you are about to stop), remind them to log the session with `log_session`. Suggest sensible values for `area`, `session_type`, and `output_type` based on what was discussed in the session.
+- Semantic search and drift detection require Ollama running with `nomic-embed-text` pulled
+- FTS5 porter stemmer may miss highly technical terms — use multiple query phrasings
+- `claudit map` ignores `node_modules`, `.git`, `dist`, `build` by default
+- Each `claudit run` session gets its own state file (`active-context-<uuid>.json`)
+  via `CLAUDIT_ACTIVE_FILE`, so concurrent sessions don't collide. The status
+  line reads the global fallback file and may show "none" when only session-scoped
+  files exist.
