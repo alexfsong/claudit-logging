@@ -11,6 +11,7 @@ and named focus profiles that survive across sessions.
 **Stack:** SQLite + FTS5. No external services required. Ollama optional for
 semantic re-ranking and drift detection.
 <img width="724" height="351" alt="Screenshot 2026-04-16 at 4 49 37 PM" src="https://github.com/user-attachments/assets/18482240-e57b-417c-a885-ffc223132439" />
+<img width="728" height="281" alt="Screenshot 2026-04-18 at 9 06 02 PM" src="https://github.com/user-attachments/assets/a9444250-1c65-4c97-96fe-43e7222b3d43" />
 
 ---
 
